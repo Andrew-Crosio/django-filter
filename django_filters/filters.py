@@ -1,17 +1,23 @@
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
+from datetime import datetime
+from datetime import tzinfo
 from datetime import timedelta
 
-
+import six
 from django import forms
 from django.db.models import Q
 from django.db.models.sql.constants import QUERY_TERMS
-from django.utils import six
-from django.utils.timezone import now
+from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
 
 from .fields import RangeField, LookupTypeField, Lookup
+
+try:
+    import pytz
+except ImportError:
+    pytz = None
 
 
 __all__ = [
@@ -23,6 +29,42 @@ __all__ = [
 
 
 LOOKUP_TYPES = sorted(QUERY_TERMS)
+
+ZERO = timedelta(0)
+
+
+class UTC(tzinfo):
+    """
+    UTC implementation taken from Python's docs.
+
+    Used only when pytz isn't available.
+    """
+
+    def __repr__(self):
+        return "<UTC>"
+
+    def utcoffset(self, dt):
+        return ZERO
+
+    def tzname(self, dt):
+        return "UTC"
+
+    def dst(self, dt):
+        return ZERO
+
+
+utc = pytz.utc if pytz else UTC()
+
+
+def now():
+    """
+    Returns an aware or naive datetime.datetime, depending on settings.USE_TZ.
+    """
+    if settings.USE_TZ:
+        # timeit shows that datetime.now(tz=utc) is 24% slower
+        return datetime.utcnow().replace(tzinfo=pytz.utc)
+    else:
+        return datetime.now()
 
 
 class Filter(object):
