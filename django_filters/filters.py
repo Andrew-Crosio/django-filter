@@ -1,17 +1,23 @@
 from __future__ import absolute_import
 from __future__ import unicode_literals
 
+from datetime import datetime
+from datetime import tzinfo
 from datetime import timedelta
 
-
+import six
 from django import forms
 from django.db.models import Q
 from django.db.models.sql.constants import QUERY_TERMS
-from django.utils import six
-from django.utils.timezone import now
+from django.conf import settings
 from django.utils.translation import ugettext_lazy as _
 
-from .fields import RangeField, LookupTypeField
+from .fields import RangeField, LookupTypeField, Lookup
+
+try:
+    import pytz
+except ImportError:
+    pytz = None
 
 
 __all__ = [
@@ -24,13 +30,49 @@ __all__ = [
 
 LOOKUP_TYPES = sorted(QUERY_TERMS)
 
+ZERO = timedelta(0)
+
+
+class UTC(tzinfo):
+    """
+    UTC implementation taken from Python's docs.
+
+    Used only when pytz isn't available.
+    """
+
+    def __repr__(self):
+        return "<UTC>"
+
+    def utcoffset(self, dt):
+        return ZERO
+
+    def tzname(self, dt):
+        return "UTC"
+
+    def dst(self, dt):
+        return ZERO
+
+
+utc = pytz.utc if pytz else UTC()
+
+
+def now():
+    """
+    Returns an aware or naive datetime.datetime, depending on settings.USE_TZ.
+    """
+    if settings.USE_TZ:
+        # timeit shows that datetime.now(tz=utc) is 24% slower
+        return datetime.utcnow().replace(tzinfo=pytz.utc)
+    else:
+        return datetime.now()
+
 
 class Filter(object):
     creation_counter = 0
     field_class = forms.Field
 
     def __init__(self, name=None, label=None, widget=None, action=None,
-        lookup_type='exact', required=False, distinct=False, **kwargs):
+        lookup_type='exact', required=False, distinct=False, exclude=False, **kwargs):
         self.name = name
         self.label = label
         if action:
@@ -40,6 +82,7 @@ class Filter(object):
         self.required = required
         self.extra = kwargs
         self.distinct = distinct
+        self.exclude = exclude
 
         self.creation_counter = Filter.creation_counter
         Filter.creation_counter += 1
@@ -47,6 +90,7 @@ class Filter(object):
     @property
     def field(self):
         if not hasattr(self, '_field'):
+            help_text = _('This is an exclusion filter') if self.exclude else ''
             if (self.lookup_type is None or
                     isinstance(self.lookup_type, (list, tuple))):
                 if self.lookup_type is None:
@@ -56,23 +100,23 @@ class Filter(object):
                         (x, x) for x in LOOKUP_TYPES if x in self.lookup_type]
                 self._field = LookupTypeField(self.field_class(
                     required=self.required, widget=self.widget, **self.extra),
-                    lookup, required=self.required, label=self.label)
+                    lookup, required=self.required, label=self.label, help_text=help_text)
             else:
                 self._field = self.field_class(required=self.required,
-                    label=self.label, widget=self.widget, **self.extra)
+                    label=self.label, widget=self.widget,
+                    help_text=help_text, **self.extra)
         return self._field
 
     def filter(self, qs, value):
-        if isinstance(value, (list, tuple)):
-            lookup = six.text_type(value[1])
-            if not lookup:
-                lookup = 'exact'  # fallback to exact if lookup is not provided
-            value = value[0]
+        if isinstance(value, Lookup):
+            lookup = six.text_type(value.lookup_type)
+            value = value.value
         else:
             lookup = self.lookup_type
         if value in ([], (), {}, None, ''):
             return qs
-        qs = qs.filter(**{'%s__%s' % (self.name, lookup): value})
+        method = qs.exclude if self.exclude else qs.filter
+        qs = method(**{'%s__%s' % (self.name, lookup): value})
         if self.distinct:
             qs = qs.distinct()
         return qs
